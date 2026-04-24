@@ -46,8 +46,10 @@ datas += datas_idna
 datas += datas_win32
 
 # Add the project root so imports work
-project_root = str(Path(__file__).resolve().parent.parent)
-client_dir = str(Path(__file__).resolve().parent)
+# __file__ may not be defined in all PyInstaller contexts — use SPECPATH fallback
+_spec_dir = Path(os.environ.get('SPECPATH', '.')).resolve()
+project_root = str(_spec_dir.parent)
+client_dir = str(_spec_dir)
 
 a = Analysis(
     [f'{client_dir}/setup_wizard.py'],
