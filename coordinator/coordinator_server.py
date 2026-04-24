@@ -454,62 +454,8 @@ def report_vm_config(vm_id):
 
 # ─── Dashboard ────────────────────────────────────────────────────────────────
 
-@app.route("/")
 def dashboard():
-    return """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>VM Alignment — Coordinator</title>
-    <meta http-equiv="refresh" content="10">
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: 'Segoe UI', sans-serif; background: #0f1117; color: #e0e0e0; min-height: 100vh; }
-        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-        h1 { color: #58a6ff; margin-bottom: 5px; }
-        .subtitle { color: #8b949e; margin-bottom: 30px; }
-        h2 { color: #c9d1d9; margin: 25px 0 15px; border-bottom: 1px solid #30363d; padding-bottom: 5px; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 15px; }
-        .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 15px; }
-        .card h3 { color: #58a6ff; font-size: 14px; margin-bottom: 8px; }
-        .card .value { font-size: 28px; font-weight: bold; color: #c9d1d9; }
-        .card .sub { font-size: 12px; color: #8b949e; margin-top: 4px; }
-        .status-ok { color: #3fb950; }
-        .status-err { color: #f85149; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #30363d; }
-        th { color: #8b949e; font-size: 12px; font-weight: 600; text-transform: uppercase; }
-        td { font-size: 14px; }
-        .mono { font-family: monospace; }
-        .tag { display: inline-block; background: #1f6feb; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; }
-        .tag.warning { background: #d29922; }
-        .nav { display: flex; gap: 20px; padding: 15px 0; border-bottom: 1px solid #30363d; margin-bottom: 20px; }
-        .nav a { color: #58a6ff; text-decoration: none; font-size: 14px; }
-        .nav a:hover { text-decoration: underline; }
-        .activity-item { padding: 8px 0; border-bottom: 1px solid #21262d; font-size: 13px; }
-        .activity-item:last-child { border-bottom: none; }
-        .time { color: #8b949e; font-size: 11px; }
-        pre { background: #161b22; padding: 15px; border-radius: 6px; overflow-x: auto; font-size: 13px; }
-        .add-form { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 15px; margin-top: 15px; }
-        .add-form input { background: #0d1117; border: 1px solid #30363d; color: #e0e0e0; padding: 8px 12px; border-radius: 4px; width: 250px; }
-        .add-form button { background: #238636; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; margin-left: 10px; }
-        .add-form button:hover { background: #2ea043; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="nav">
-            <a href="/">Overview</a>
-            <a href="/repos">Repos</a>
-            <a href="/vms">VMs</a>
-            <a href="/activity">Activity</a>
-        </div>
-        <h1>VM Alignment Coordinator</h1>
-        <p class="subtitle">Deployment coordination via RabbitMQ</p>
-    </div>
-</body>
-</html>
-"""
+    pass  # placeholder — overridden below
 
 # ─── Dashboard ────────────────────────────────────────────────────────────────
 
