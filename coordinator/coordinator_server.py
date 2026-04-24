@@ -506,66 +506,13 @@ def dashboard():
         </div>
         <h1>VM Alignment Coordinator</h1>
         <p class="subtitle">Deployment coordination via RabbitMQ</p>
-"""
-
-# We'll build the rest dynamically
-dashboard_html = """
-        <h2>System Status</h2>
-        <div class="grid">
-            <div class="card">
-                <h3>Repos</h3>
-                <div class="value">{{ repos|length }}</div>
-                <div class="sub">configured</div>
-            </div>
-            <div class="card">
-                <h3>Registered VMs</h3>
-                <div class="value">{{ vms|length }}</div>
-                <div class="sub">active</div>
-            </div>
-            <div class="card">
-                <h3>Total Messages</h3>
-                <div class="value">{{ total_messages }}</div>
-                <div class="sub">in queues</div>
-            </div>
-            <div class="card">
-                <h3>Coordinator</h3>
-                <div class="value status-ok">Online</div>
-                <div class="sub">v%s</div>
-            </div>
-        </div>
-
-        <h2>Queue Health</h2>
-        <table>
-            <tr><th>Repo</th><th>Queue</th><th>Messages</th><th>Consumers</th></tr>
-            {% for name, info in queue_info.items() %}
-            <tr>
-                <td>{{ name }}</td>
-                <td class="mono">{{ info.queue }}</td>
-                <td>{{ info.messages }}</td>
-                <td>{{ info.consumers }}</td>
-            </tr>
-            {% else %}
-            <tr><td colspan="4" style="color:#8b949e">No queues available</td></tr>
-            {% endfor %}
-        </table>
-
-        <h2>Recent Activity</h2>
-        {% for entry in activity[:10] %}
-        <div class="activity-item">
-            <span class="tag {% if entry.type == 'error' %}warning{% endif %}">{{ entry.type }}</span>
-            <strong>{{ entry.repo }}</strong> — %s
-            <span class="time">%s</span>
-        </div>
-        {% else %}
-        <p style="color:#8b949e">No recent activity</p>
-        {% endfor %}
     </div>
 </body>
 </html>
-""" % (__version__, "{{ entry.detail }}", "{{ entry.timestamp }}")
+"""
 
+# ─── Dashboard ────────────────────────────────────────────────────────────────
 
-# Instead of Jinja2 template, build the dashboard inline with Python string replacement
 def make_dashboard():
     try:
         queue_info = _rmq.get_queue_info()
