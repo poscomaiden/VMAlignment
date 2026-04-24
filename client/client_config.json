@@ -1,0 +1,17 @@
+{
+  "coordinator_url": "http://YOUR_COORDINATOR_IP:5000",
+  "rabbitmq_host": "YOUR_COORDINATOR_IP",
+  "rabbitmq_port": 5672,
+  "rabbitmq_user": "guest",
+  "rabbitmq_password": "guest",
+  "vm_id": "vm-001",
+  "vm_name": "VM 1 - POS Server",
+  "repos": [
+    {
+      "name": "keyboardvisualiser",
+      "path": "C:\\KeyboardVisualiser",
+      "enabled": true
+    }
+  ],
+  "health_interval_seconds": 30
+}
