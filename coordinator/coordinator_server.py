@@ -352,19 +352,98 @@ def get_vms():
         return jsonify(_state.get("vms", {}))
 
 
-@app.route("/api/vms/<vm_id>", methods=["POST"])
-def register_vm(vm_id):
-    """VMs call this to register/update their heartbeat."""
+@app.route("/api/vms/<vm_id>", methods=["GET", "POST"])
+def vm_endpoint(vm_id):
+    """GET: Return VM info. POST: VMs call this to register/update their heartbeat."""
+    global _state
+    if request.method == "GET":
+        with _state_lock:
+            vm = _state.get("vms", {}).get(vm_id)
+            if not vm:
+                abort(404, f"VM '{vm_id}' not found")
+            return jsonify(vm)
+    
+    # POST — register/update heartbeat
     data = request.get_json() or {}
     with _state_lock:
-        _state.setdefault("vms", {})[vm_id] = {
-            "name": data.get("name", vm_id),
-            "last_heartbeat": datetime.now(timezone.utc).isoformat(),
-            "repos": data.get("repos", []),
-            "hostname": data.get("hostname", ""),
-            "ip": request.remote_addr
-        }
+        vm = _state.setdefault("vms", {})[vm_id]
+        vm["name"] = data.get("name", vm_id)
+        vm["last_heartbeat"] = datetime.now(timezone.utc).isoformat()
+        vm["repos"] = data.get("repos", vm.get("repos", []))
+        vm["hostname"] = data.get("hostname", vm.get("hostname", ""))
+        vm["ip"] = request.remote_addr
+        vm["coordinator_url"] = data.get("coordinator_url", "")
         save_state(_state)
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/vms/<vm_id>/config", methods=["GET"])
+def get_vm_config(vm_id):
+    """Return the stored config for a specific VM (for bi-directional sync)."""
+    with _state_lock:
+        vm = _state.get("vms", {}).get(vm_id)
+        if not vm:
+            abort(404, f"VM '{vm_id}' not found")
+        # Return all config fields the coordinator tracks
+        return jsonify({
+            "vm_id": vm_id,
+            "name": vm.get("name", ""),
+            "repos": vm.get("repos", []),
+            "coordinator_url": vm.get("coordinator_url", ""),
+            "hostname": vm.get("hostname", ""),
+        })
+
+
+@app.route("/api/vms/<vm_id>/config", methods=["PUT", "POST"])
+def push_vm_config(vm_id):
+    """Coordinator (or dashboard) pushes config TO a VM via the client's report endpoint."""
+    data = request.get_json() or {}
+    with _state_lock:
+        vm = _state.get("vms", {}).get(vm_id)
+        if not vm:
+            abort(404, f"VM '{vm_id}' not found")
+    
+    # The coordinator stores the desired config; the client will poll/receive this
+    # We store it as pending_config so the client can fetch it
+    with _state_lock:
+        _state["vms"][vm_id]["pending_config"] = data
+        _state["vms"][vm_id]["config_timestamp"] = datetime.now(timezone.utc).isoformat()
+        save_state(_state)
+    
+    record_activity("config_push", vm_id, f"Config update queued for VM: {list(data.keys())}")
+    return jsonify({"status": "ok", "message": "Config queued for VM"})
+
+
+@app.route("/api/vms/<vm_id>/pending-config", methods=["GET"])
+def get_pending_config(vm_id):
+    """Client polls this to check if coordinator has config changes for it."""
+    with _state_lock:
+        vm = _state.get("vms", {}).get(vm_id)
+        if not vm:
+            abort(404, f"VM '{vm_id}' not found")
+        pending = vm.get("pending_config")
+        if pending:
+            # Clear it so next poll doesn't re-deliver the same config
+            del _state["vms"][vm_id]["pending_config"]
+            save_state(_state)
+            return jsonify({"has_config": True, "config": pending})
+        return jsonify({"has_config": False})
+
+
+@app.route("/api/vms/<vm_id>/report-config", methods=["POST"])
+def report_vm_config(vm_id):
+    """Client reports its current config BACK to the coordinator (bi-directional sync)."""
+    data = request.get_json() or {}
+    with _state_lock:
+        vm = _state.get("vms", {}).get(vm_id)
+        if not vm:
+            # Auto-register if VM hasn't been seen
+            vm = _state.setdefault("vms", {})[vm_id]
+        vm["reported_config"] = data
+        vm["last_config_report"] = datetime.now(timezone.utc).isoformat()
+        save_state(_state)
+    
+    record_activity("config_report", vm_id, f"VM reported config: {list(data.keys())}")
     return jsonify({"status": "ok"})
 
 
@@ -749,7 +828,7 @@ def vms_page():
                 hb_text = last_hb[:19] if last_hb else "—"
 
             rows += f"""<tr>
-                <td><strong>{vm.get('name', vm_id)}</strong></td>
+                <td><a href="/vms/{vm_id}" style="color:#58a6ff;text-decoration:none"><strong>{vm.get('name', vm_id)}</strong></a></td>
                 <td class="mono">{vm_id}</td>
                 <td>{ip}</td>
                 <td>{repos}</td>
@@ -854,6 +933,145 @@ def activity_page():
         <h1>Activity Log</h1>
         {rows}
     </div>
+</body>
+</html>"""
+    return html
+
+
+# ─── VM Detail Page ─────────────────────────────────────────────────────────
+
+@app.route("/vms/<vm_id>")
+def vm_detail_page(vm_id):
+    with _state_lock:
+        vm = _state.get("vms", {}).get(vm_id)
+        if not vm:
+            return f"<html><body><h1>VM '{vm_id}' not found</h1><p><a href='/vms'>Back to VMs</a></p></body></html>", 404
+
+    reported_cfg = vm.get("reported_config", {})
+    pending_cfg = vm.get("pending_config", {})
+    repos = vm.get("repos", [])
+
+    # Build repo list HTML
+    if repos:
+        repos_html = ", ".join(f"<span class='tag'>{r}</span>" for r in repos)
+    else:
+        repos_html = "<span style='color:#8b949e'>none</span>"
+
+    # Reported config as JSON
+    reported_json = json.dumps(reported_cfg, indent=2)
+    reported_json = reported_json.replace("\n", "<br>").replace(" ", "&nbsp;")
+
+    # Pending config
+    if pending_cfg:
+        pending_json = json.dumps(pending_cfg, indent=2)
+        pending_note = f"<div style='background:#2d2d00;border:1px solid #d29922;border-radius:6px;padding:10px;margin:10px 0'><strong style='color:#d29922'>Pending config queued:</strong><pre style='color:#d29922;margin:5px 0;font-size:12px'>{json.dumps(pending_cfg, indent=2)}</pre></div>"
+    else:
+        pending_note = ""
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>VM {vm_id} — VM Alignment</title>
+    <style>
+        body {{ font-family: 'Segoe UI', sans-serif; background: #0f1117; color: #e0e0e0; }}
+        .container {{ max-width: 900px; margin: 0 auto; padding: 20px; }}
+        .nav {{ display: flex; gap: 20px; padding: 15px 0; border-bottom: 1px solid #30363d; margin-bottom: 20px; }}
+        .nav a {{ color: #58a6ff; text-decoration: none; font-size: 14px; }}
+        .nav a:hover {{ text-decoration: underline; }}
+        .back {{ color: #8b949e; font-size: 13px; margin-bottom: 15px; }}
+        h1 {{ color: #58a6ff; margin-bottom: 5px; }}
+        .vm-id {{ color: #8b949e; font-family: monospace; font-size: 13px; }}
+        .card {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; margin-bottom: 20px; }}
+        .card h2 {{ color: #c9d1d9; font-size: 16px; margin: 0 0 15px; border-bottom: 1px solid #30363d; padding-bottom: 8px; }}
+        .info-grid {{ display: grid; grid-template-columns: 140px auto; gap: 8px; font-size: 14px; }}
+        .info-key {{ color: #8b949e; }}
+        .info-val {{ color: #e0d0d0; font-family: monospace; }}
+        .tag {{ display: inline-block; background: #1f6feb; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-right: 4px; }}
+        pre {{ background: #0d1117; padding: 12px; border-radius: 6px; font-size: 13px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }}
+        .config-form textarea {{ background: #0d1117; border: 1px solid #30363d; color: #e0e0e0; padding: 12px; border-radius: 6px; width: 100%; font-family: monospace; font-size: 13px; min-height: 200px; }}
+        .config-form button {{ background: #238636; color: white; border: none; padding: 10px 24px; border-radius: 6px; cursor: pointer; font-size: 14px; margin-top: 10px; }}
+        .config-form button:hover {{ background: #2ea043; }}
+        .config-form label {{ display: block; color: #c9d1d9; font-size: 14px; margin-bottom: 5px; }}
+        .success {{ background: #2d2d00; border: 1px solid #3fb950; border-radius: 6px; padding: 10px; color: #3fb950; margin-top: 10px; display: none; }}
+        .heartbeat-ok {{ color: #3fb950; }}
+        .heartbeat-old {{ color: #d29922; }}
+        .heartbeat-dead {{ color: #f85149; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="back"><a href="/vms">&larr; Back to VMs</a></div>
+        <h1>{vm.get('name', vm_id)}</h1>
+        <div class="vm-id">ID: {vm_id}</div>
+
+        <div class="card">
+            <h2>Status</h2>
+            <div class="info-grid">
+                <span class="info-key">IP Address</span><span class="info-val">{vm.get('ip', '—')}</span>
+                <span class="info-key">Hostname</span><span class="info-val">{vm.get('hostname', '—')}</span>
+                <span class="info-key">Coordinator</span><span class="info-val">{vm.get('coordinator_url', '—')}</span>
+                <span class="info-key">Last Heartbeat</span><span class="info-val">{vm.get('last_heartbeat', '—')[:19] if vm.get('last_heartbeat') else '—'}</span>
+                <span class="info-key">Subscribed Repos</span><span class="info-val">{repos_html}</span>
+                <span class="info-key">Last Config Report</span><span class="info-val">{vm.get('last_config_report', '—')[:19] if vm.get('last_config_report') else '—'}</span>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Reported Configuration</h2>
+            <pre>{json.dumps(reported_cfg, indent=2) if reported_cfg else 'No config reported yet.'}</pre>
+        </div>
+
+        {pending_note}
+
+        <div class="card config-form">
+            <h2>Push Configuration to VM</h2>
+            <p style="color:#8b949e;font-size:13px;margin-bottom:10px">
+                Paste a JSON object below to push new config to this VM. The client will receive it on its next config poll.
+                Leave empty to push only the fields you specify.
+            </p>
+            <form id="pushForm" method="post" action="/api/vms/{vm_id}/config">
+                <label>Config JSON (partial updates are fine):</label>
+                <textarea name="config_json" id="configJson" placeholder='{{"repos": [{{"name": "myrepo", "path": "C:\\\\Dev\\\\MyProject", "enabled": true}}], "health_interval_seconds": 60}}'></textarea>
+                <button type="submit">Push Config to VM</button>
+            </form>
+            <div class="success" id="successMsg">Config queued and will be delivered to VM on next poll!</div>
+        </div>
+
+        <div class="card">
+            <h2>Config Update History</h2>
+            <pre>{"No config updates recorded yet." if not vm.get('last_config_report') else 'See Reported Configuration above for latest.'}</pre>
+        </div>
+    </div>
+    <script>
+        document.getElementById('pushForm').addEventListener('submit', async function(e) {{
+            e.preventDefault();
+            let jsonText = document.getElementById('configJson').value.trim();
+            if (!jsonText) {{
+                alert('Please enter config JSON');
+                return;
+            }}
+            let config;
+            try {{
+                config = JSON.parse(jsonText);
+            }} catch(e) {{
+                alert('Invalid JSON: ' + e.message);
+                return;
+            }}
+            let resp = await fetch('/api/vms/{vm_id}/config', {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify(config)
+            }});
+            if (resp.ok) {{
+                document.getElementById('successMsg').style.display = 'block';
+                document.getElementById('configJson').value = '';
+                setTimeout(() => location.reload(), 1500);
+            }} else {{
+                let err = await resp.text();
+                alert('Failed: ' + err);
+            }}
+        }});
+    </script>
 </body>
 </html>"""
     return html

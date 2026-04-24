@@ -61,11 +61,48 @@ class VMAlignmentClient:
         self.rabbitmq_password = self.config.get("rabbitmq_password", "guest")
         self.repos = self.config.get("repos", [])
         self.health_interval = self.config.get("health_interval_seconds", 30)
+        self.config_report_interval = self.config.get("config_report_interval_seconds", 300)
         
         self._connection = None
         self._channel = None
         self._should_stop = False
         self._heartbeat_thread = None
+        self._config_thread = None
+
+    def save_config(self):
+        """Save current config to disk (for applying pushed config changes)."""
+        save_client_config(self.config)
+
+    def apply_config_update(self, new_config: dict) -> bool:
+        """Apply a config pushed from the coordinator."""
+        if not new_config:
+            return False
+        
+        old_config = self.config.copy()
+        # Merge in pushed values
+        for key in ["vm_name", "repos", "health_interval_seconds", "rabbitmq_host",
+                    "rabbitmq_port", "rabbitmq_user", "rabbitmq_password"]:
+            if key in new_config:
+                self.config[key] = new_config[key]
+        
+        # If repos were updated, reload them
+        if "repos" in new_config:
+            self.repos = self.config["repos"] = new_config["repos"]
+        
+        self.save_config()
+        self.log.info(f"Applied config update from coordinator: {list(new_config.keys())}")
+        
+        # Record in state
+        state = load_state()
+        state.setdefault("config_updates", []).insert(0, {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "keys": list(new_config.keys()),
+            "old": old_config,
+            "new": self.config
+        })
+        state["config_updates"] = state["config_updates"][:20]
+        save_state(state)
+        return True
 
     def git_pull(self, repo_path: str) -> tuple[bool, str]:
         """Run git pull on the given repo path."""
@@ -197,7 +234,8 @@ class VMAlignmentClient:
                 "name": self.vm_name,
                 "repos": [r["name"] for r in self.repos if r.get("enabled", True)],
                 "hostname": os.environ.get("COMPUTERNAME", ""),
-                "last_update": state.get("last_update")
+                "last_update": state.get("last_update"),
+                "coordinator_url": self.coordinator_url,
             }
             resp = requests.post(
                 f"{self.coordinator_url}/api/vms/{self.vm_id}",
@@ -210,6 +248,53 @@ class VMAlignmentClient:
                 self.log.warning(f"Heartbeat failed: {resp.status_code}")
         except requests.RequestException as e:
             self.log.debug(f"Heartbeat error: {e}")
+
+    def check_pending_config(self):
+        """Poll coordinator for any pending config updates and apply them."""
+        try:
+            resp = requests.get(
+                f"{self.coordinator_url}/api/vms/{self.vm_id}/pending-config",
+                timeout=5
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("has_config"):
+                    cfg = data.get("config", {})
+                    self.apply_config_update(cfg)
+                    self.log.info("Received and applied config push from coordinator")
+        except requests.RequestException as e:
+            self.log.debug(f"Config poll error: {e}")
+
+    def report_config_to_coordinator(self):
+        """Report current client config back to coordinator for visibility."""
+        try:
+            payload = {
+                "coordinator_url": self.coordinator_url,
+                "rabbitmq_host": self.rabbitmq_host,
+                "rabbitmq_port": self.rabbitmq_port,
+                "repos": self.repos,
+                "health_interval_seconds": self.health_interval,
+                "version": __version__,
+            }
+            requests.post(
+                f"{self.coordinator_url}/api/vms/{self.vm_id}/report-config",
+                json=payload,
+                timeout=5
+            )
+        except requests.RequestException as e:
+            self.log.debug(f"Config report error: {e}")
+
+    def config_loop(self):
+        """Periodically check for pushed config and report config to coordinator."""
+        while not self._should_stop:
+            time.sleep(self.config_report_interval)
+            if self._should_stop:
+                break
+            try:
+                self.check_pending_config()
+                self.report_config_to_coordinator()
+            except Exception as e:
+                self.log.debug(f"Config loop error: {e}")
 
     def heartbeat_loop(self):
         """Periodically send heartbeats."""
@@ -235,6 +320,13 @@ class VMAlignmentClient:
         # Start heartbeat thread
         self._heartbeat_thread = threading.Thread(target=self.heartbeat_loop, daemon=True)
         self._heartbeat_thread.start()
+
+        # Start config sync thread (polls for pushed config, reports current config)
+        self._config_thread = threading.Thread(target=self.config_loop, daemon=True)
+        self._config_thread.start()
+
+        # Do initial config report
+        self.report_config_to_coordinator()
 
         while not self._should_stop:
             try:
