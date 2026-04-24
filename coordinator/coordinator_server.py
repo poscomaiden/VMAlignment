@@ -60,6 +60,11 @@ def save_config(cfg: dict):
 
 def load_state() -> dict:
     if STATE_FILE.exists():
+        if STATE_FILE.is_dir():
+            # Corrupt state — a directory was created instead of a file
+            import shutil
+            shutil.rmtree(str(STATE_FILE))
+            STATE_FILE.mkdir(parents=True)
         with open(STATE_FILE) as f:
             return json.load(f)
     return {"repos": {}, "vms": {}, "activity": []}
